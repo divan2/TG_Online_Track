@@ -2,6 +2,8 @@ import json
 import datetime
 import asyncio
 import os
+from modulefinder import Module
+from multiprocessing.connection import MESSAGE_LENGTH
 from random import sample
 
 import matplotlib.pyplot as plt
@@ -11,6 +13,7 @@ import threading
 import pyrogram
 from pyrogram import Client
 import telebot
+from telebot import types
 
 
 async def check_user_online(app, user_id, filename):
@@ -72,11 +75,19 @@ def run_external_bot(bot_token):
 
     @bot.message_handler(commands=['start'])
     def start_message(message):
-        bot.reply_to(message,
-                     "Привет! Отправь мне ID пользователя Telegram, чтобы начать отслеживать его онлайн-статус.")
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        btn_add_user = types.KeyboardButton("Добавить пользователя")
+        markup.add(btn_add_user)
+        bot.send_message(message.chat.id,
+                         "Привет! Нажмите кнопку, чтобы добавить пользователя для отслеживания.",
+                         reply_markup=markup)
 
-    @bot.message_handler(func=lambda message: True)  # Обработчик для всех сообщений, не являющихся командами
-    def handle_message(message):
+    @bot.message_handler(func=lambda message: message.text == "Добавить пользователя")
+    def add_user_button_handler(message):
+        bot.send_message(message.chat.id, "Отправьте ID пользователя Telegram для отслеживания.")
+        bot.register_next_step_handler(message, handle_add_user)
+
+    def handle_add_user(message):
         try:
             user_id = message.text
             data = {}
@@ -123,16 +134,7 @@ def run_external_bot(bot_token):
             for user_id, user_data in data['users'].items():
                 online_times = [entry["online"] for entry in user_data]
                 times = [entry["time"] for entry in user_data]
-                plt.plot(times, online_times)
-                plt.xlabel("Время")
-                plt.ylabel("Онлайн")
-                plt.title(f"Статистика пользователя {user_id}")
-                buf = BytesIO()
-                plt.savefig(buf, format='png')
-                buf.seek(0)
-                plt.close()
-                image_b64 = base64.b64encode(buf.read()).decode('utf-8')
-                bot.send_photo(message.chat.id, f"data:image/png;base64,{image_b64}")
+                bot.reply_to(message, f"online_times: {online_times}")
 
     bot.infinity_polling()
 
@@ -144,11 +146,12 @@ async def main():
     app_id = config['app_id']
     api_hash = config['api_hash']
     bot_token = config['bot_token']
-
+    try:
     # Запуск внутреннего бота в отдельном потоке
-    internal_bot_thread = threading.Thread(target=lambda: asyncio.run(run_internal_bot(app_id, api_hash, bot_token)))
-    internal_bot_thread.start()
-
+        internal_bot_thread = threading.Thread(target=lambda: asyncio.run(run_internal_bot(app_id, api_hash, bot_token)))
+        internal_bot_thread.start()
+    except:
+        print("не запустилчя internal_bot_thread")
     # Запуск внешнего бота
     run_external_bot(bot_token)
 
