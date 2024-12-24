@@ -4,6 +4,9 @@ import asyncio
 import os
 from random import sample
 
+import matplotlib
+
+matplotlib.use('Agg')  # Добавляем эту строку
 import matplotlib.pyplot as plt
 from io import BytesIO
 import base64
@@ -12,6 +15,8 @@ import pyrogram
 from pyrogram import Client
 import telebot
 from telebot import types
+import numpy as np
+import matplotlib.dates as mdates
 
 
 async def check_user_online(app, user_id, filename):
@@ -136,19 +141,57 @@ def run_external_bot(bot_token):
                 if str(user_id) not in data["users"]:
                     bot.reply_to(message, "Пользователь не отслеживается.")
                     return
-                user_data = data["users"][str(user_id)]
+                user_data = data["users"].get(str(user_id), [])
 
-                if not user_data:
-                    bot.reply_to(message, "Нет данных о пользователе.")
-                    return
+                now = datetime.datetime.now()
+                hours_24_ago = now - datetime.timedelta(hours=24)
 
-                text = f"Статистика пользователя {user_id}:\n"
-                for entry in user_data:
-                    time = entry['time']
-                    status = "онлайн" if entry['online'] == 1 else "оффлайн"
-                    text += f"  - {time}: {status}\n"
-                bot.send_message(message.chat.id, text)
+                hourly_online_times = np.zeros(24)
+                if user_data:
+                    for i in range(24):
+                        start_time = hours_24_ago + datetime.timedelta(hours=i)
+                        end_time = hours_24_ago + datetime.timedelta(hours=i + 1)
 
+                        for j in range(len(user_data)):
+                            if j + 1 < len(user_data):
+                                entry_time_str = user_data[j]["time"]
+                                next_entry_time_str = user_data[j + 1]["time"]
+
+                                entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                next_entry_time = datetime.datetime.strptime(next_entry_time_str, "%Y-%m-%d %H:%M:%S")
+                            else:
+                                entry_time_str = user_data[j]["time"]
+                                entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                next_entry_time = datetime.datetime.now()
+
+                            if entry_time < end_time and entry_time >= start_time:
+                                if user_data[j]["online"] == 1:
+                                    if next_entry_time <= end_time:
+                                        online_duration = (next_entry_time - entry_time).total_seconds() / 3600
+                                        hourly_online_times[i] += online_duration
+                                    else:
+                                        online_duration = (end_time - entry_time).total_seconds() / 3600
+                                        hourly_online_times[i] += online_duration
+
+                fig, ax = plt.subplots(figsize=(10, 5))
+
+                hours = [hours_24_ago + datetime.timedelta(hours=i) for i in range(24)]
+
+                ax.bar(hours, hourly_online_times, width=0.04, align='edge')
+
+                ax.set_xlabel("Время")
+                ax.set_ylabel("Время онлайн (часы)")
+                ax.set_title(f"Активность пользователя {user_id} за последние 24 часа")
+                ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                fig.autofmt_xdate()
+
+                buf = BytesIO()
+                plt.savefig(buf, format='png')
+                buf.seek(0)
+                plt.close()
+
+                bot.send_photo(message.chat.id, photo=buf)
         except ValueError:
             bot.reply_to(message, "Неверный формат ID.  Пожалуйста, введите число.")
         except Exception as e:
