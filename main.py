@@ -2,8 +2,6 @@ import json
 import datetime
 import asyncio
 import os
-from modulefinder import Module
-from multiprocessing.connection import MESSAGE_LENGTH
 from random import sample
 
 import matplotlib.pyplot as plt
@@ -77,9 +75,10 @@ def run_external_bot(bot_token):
     def start_message(message):
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
         btn_add_user = types.KeyboardButton("Добавить пользователя")
-        markup.add(btn_add_user)
+        btn_check_online = types.KeyboardButton("Посмотреть онлайн")
+        markup.add(btn_add_user, btn_check_online)
         bot.send_message(message.chat.id,
-                         "Привет! Нажмите кнопку, чтобы добавить пользователя для отслеживания.",
+                         "Привет! Нажмите кнопку, чтобы добавить пользователя для отслеживания или посмотреть его онлайн-статус.",
                          reply_markup=markup)
 
     @bot.message_handler(func=lambda message: message.text == "Добавить пользователя")
@@ -124,6 +123,37 @@ def run_external_bot(bot_token):
         except Exception as e:
             bot.reply_to(message, f"Ошибка: {e}")
 
+    @bot.message_handler(func=lambda message: message.text == "Посмотреть онлайн")
+    def check_online_button_handler(message):
+        bot.send_message(message.chat.id, "Отправьте ID пользователя Telegram, чтобы посмотреть его статистику.")
+        bot.register_next_step_handler(message, handle_check_online)
+
+    def handle_check_online(message):
+        try:
+            user_id = message.text
+            with open('id.json', 'r') as f:
+                data = json.load(f)
+                if str(user_id) not in data["users"]:
+                    bot.reply_to(message, "Пользователь не отслеживается.")
+                    return
+                user_data = data["users"][str(user_id)]
+
+                if not user_data:
+                    bot.reply_to(message, "Нет данных о пользователе.")
+                    return
+
+                text = f"Статистика пользователя {user_id}:\n"
+                for entry in user_data:
+                    time = entry['time']
+                    status = "онлайн" if entry['online'] == 1 else "оффлайн"
+                    text += f"  - {time}: {status}\n"
+                bot.send_message(message.chat.id, text)
+
+        except ValueError:
+            bot.reply_to(message, "Неверный формат ID.  Пожалуйста, введите число.")
+        except Exception as e:
+            bot.reply_to(message, f"Ошибка: {e}")
+
     @bot.message_handler(commands=['stats'])
     def send_stats(message):
         with open('id.json', 'r') as f:
@@ -147,8 +177,9 @@ async def main():
     api_hash = config['api_hash']
     bot_token = config['bot_token']
     try:
-    # Запуск внутреннего бота в отдельном потоке
-        internal_bot_thread = threading.Thread(target=lambda: asyncio.run(run_internal_bot(app_id, api_hash, bot_token)))
+        # Запуск внутреннего бота в отдельном потоке
+        internal_bot_thread = threading.Thread(
+            target=lambda: asyncio.run(run_internal_bot(app_id, api_hash, bot_token)))
         internal_bot_thread.start()
     except:
         print("не запустилчя internal_bot_thread")
