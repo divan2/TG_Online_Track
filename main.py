@@ -6,7 +6,7 @@ from random import sample
 
 import matplotlib
 
-matplotlib.use('Agg')  # Добавляем эту строку
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from io import BytesIO
 import base64
@@ -130,12 +130,34 @@ def run_external_bot(bot_token):
 
     @bot.message_handler(func=lambda message: message.text == "Посмотреть онлайн")
     def check_online_button_handler(message):
-        bot.send_message(message.chat.id, "Отправьте ID пользователя Telegram, чтобы посмотреть его статистику.")
-        bot.register_next_step_handler(message, handle_check_online)
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+        btn_month = types.KeyboardButton("Месяц")
+        btn_day = types.KeyboardButton("День")
+        btn_hour = types.KeyboardButton("Час")
+        markup.add(btn_month, btn_day, btn_hour)
+        bot.send_message(message.chat.id, "Выберите период для просмотра статистики.", reply_markup=markup)
 
-    def handle_check_online(message):
+    @bot.message_handler(func=lambda message: message.text == "Месяц")
+    def handle_month_stats(message):
+        bot.send_message(message.chat.id,
+                         "Отправьте ID пользователя Telegram, чтобы посмотреть его статистику за месяц.")
+        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='month'))
+
+    @bot.message_handler(func=lambda message: message.text == "День")
+    def handle_day_stats(message):
+        bot.send_message(message.chat.id,
+                         "Отправьте ID пользователя Telegram и дату (формат: YYYY-MM-DD), чтобы посмотреть его статистику за этот день.")
+        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='day'))
+
+    @bot.message_handler(func=lambda message: message.text == "Час")
+    def handle_hour_stats(message):
+        bot.send_message(message.chat.id,
+                         "Отправьте ID пользователя Telegram и час (формат: HH), чтобы посмотреть его статистику за этот час.")
+        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='hour'))
+
+    def handle_stats(message, period):
         try:
-            user_id = message.text
+            user_id = message.text.split(' ')[0] if period != 'month' else message.text
             with open('id.json', 'r') as f:
                 data = json.load(f)
                 if str(user_id) not in data["users"]:
@@ -143,57 +165,146 @@ def run_external_bot(bot_token):
                     return
                 user_data = data["users"].get(str(user_id), [])
 
-                now = datetime.datetime.now()
-                hours_24_ago = now - datetime.timedelta(hours=24)
+                if period == 'month':
+                    end_date = datetime.datetime.now()
+                    start_date = end_date - datetime.timedelta(days=30)
 
-                hourly_online_times = np.zeros(24)
-                if user_data:
-                    for i in range(24):
-                        start_time = hours_24_ago + datetime.timedelta(hours=i)
-                        end_time = hours_24_ago + datetime.timedelta(hours=i + 1)
+                    daily_online_times = np.zeros(30)
+                    days = [start_date + datetime.timedelta(days=i) for i in range(30)]
+                    if user_data:
+                        for i in range(30):
+                            current_day = start_date + datetime.timedelta(days=i)
+                            start_of_day = current_day.replace(hour=0, minute=0, second=0, microsecond=0)
+                            end_of_day = current_day.replace(hour=23, minute=59, second=59, microsecond=999999)
+                            total_online_seconds = 0
 
-                        for j in range(len(user_data)):
-                            if j + 1 < len(user_data):
-                                entry_time_str = user_data[j]["time"]
-                                next_entry_time_str = user_data[j + 1]["time"]
+                            for j in range(len(user_data)):
+                                if j + 1 < len(user_data):
+                                    entry_time_str = user_data[j]["time"]
+                                    next_entry_time_str = user_data[j + 1]["time"]
 
-                                entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
-                                next_entry_time = datetime.datetime.strptime(next_entry_time_str, "%Y-%m-%d %H:%M:%S")
-                            else:
-                                entry_time_str = user_data[j]["time"]
-                                entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
-                                next_entry_time = datetime.datetime.now()
+                                    entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                    next_entry_time = datetime.datetime.strptime(next_entry_time_str,
+                                                                                 "%Y-%m-%d %H:%M:%S")
 
-                            if entry_time < end_time and entry_time >= start_time:
-                                if user_data[j]["online"] == 1:
-                                    if next_entry_time <= end_time:
-                                        online_duration = (next_entry_time - entry_time).total_seconds() / 3600
-                                        hourly_online_times[i] += online_duration
-                                    else:
-                                        online_duration = (end_time - entry_time).total_seconds() / 3600
-                                        hourly_online_times[i] += online_duration
+                                else:
+                                    entry_time_str = user_data[j]["time"]
+                                    entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                    next_entry_time = end_date
 
-                fig, ax = plt.subplots(figsize=(10, 5))
+                                if entry_time < end_of_day and entry_time >= start_of_day:
+                                    if user_data[j]["online"] == 1:
+                                        online_start = max(entry_time, start_of_day)
+                                        online_end = min(next_entry_time, end_of_day)
+                                        total_online_seconds += (online_end - online_start).total_seconds()
+                            daily_online_times[i] = total_online_seconds / 3600
 
-                hours = [hours_24_ago + datetime.timedelta(hours=i) for i in range(24)]
+                    fig, ax = plt.subplots(figsize=(15, 5))
+                    ax.bar(days, daily_online_times, width=0.8, align='edge')
+                    ax.set_xlabel("Дата")
+                    ax.set_ylabel("Время онлайн (часы)")
+                    ax.set_title(f"Активность пользователя {user_id} за последние 30 дней")
+                    ax.xaxis.set_major_locator(mdates.DayLocator(interval=2))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
+                    fig.autofmt_xdate()
 
-                ax.bar(hours, hourly_online_times, width=0.04, align='edge')
+                elif period == 'day':
+                    date_str = message.text.split(' ')[1]
+                    date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
+                    start_of_day = date.replace(hour=0, minute=0, second=0, microsecond=0)
+                    end_of_day = date.replace(hour=23, minute=59, second=59, microsecond=999999)
 
-                ax.set_xlabel("Время")
-                ax.set_ylabel("Время онлайн (часы)")
-                ax.set_title(f"Активность пользователя {user_id} за последние 24 часа")
-                ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-                fig.autofmt_xdate()
+                    hourly_online_times = np.zeros(24)
+
+                    if user_data:
+                        for i in range(24):
+                            start_time = start_of_day + datetime.timedelta(hours=i)
+                            end_time = start_of_day + datetime.timedelta(hours=i + 1)
+                            for j in range(len(user_data)):
+                                if j + 1 < len(user_data):
+                                    entry_time_str = user_data[j]["time"]
+                                    next_entry_time_str = user_data[j + 1]["time"]
+
+                                    entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                    next_entry_time = datetime.datetime.strptime(next_entry_time_str,
+                                                                                 "%Y-%m-%d %H:%M:%S")
+                                else:
+                                    entry_time_str = user_data[j]["time"]
+                                    entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                    next_entry_time = end_of_day
+
+                                if entry_time < end_time and entry_time >= start_time:
+                                    if user_data[j]["online"] == 1:
+                                        if next_entry_time <= end_time:
+                                            online_duration = (next_entry_time - entry_time).total_seconds() / 3600
+                                            hourly_online_times[i] += online_duration
+                                        else:
+                                            online_duration = (end_time - entry_time).total_seconds() / 3600
+                                            hourly_online_times[i] += online_duration
+
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    hours = [start_of_day + datetime.timedelta(hours=i) for i in range(24)]
+                    ax.bar(hours, hourly_online_times, width=0.04, align='edge')
+                    ax.set_xlabel("Время")
+                    ax.set_ylabel("Время онлайн (часы)")
+                    ax.set_title(f"Активность пользователя {user_id} за {date.strftime('%Y-%m-%d')}")
+                    ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    fig.autofmt_xdate()
+
+                elif period == 'hour':
+                    hour_str = message.text.split(' ')[1]
+                    hour = int(hour_str)
+                    now = datetime.datetime.now()
+                    start_of_hour = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+                    end_of_hour = now.replace(hour=hour, minute=59, second=59, microsecond=999999)
+
+                    num_intervals = 12
+                    hourly_online_times = np.zeros(num_intervals)
+
+                    if user_data:
+                        for i in range(num_intervals):
+                            start_time = start_of_hour + datetime.timedelta(minutes=i * 5)
+                            end_time = start_of_hour + datetime.timedelta(minutes=(i + 1) * 5)
+                            for j in range(len(user_data)):
+                                if j + 1 < len(user_data):
+                                    entry_time_str = user_data[j]["time"]
+                                    next_entry_time_str = user_data[j + 1]["time"]
+
+                                    entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                    next_entry_time = datetime.datetime.strptime(next_entry_time_str,
+                                                                                 "%Y-%m-%d %H:%M:%S")
+                                else:
+                                    entry_time_str = user_data[j]["time"]
+                                    entry_time = datetime.datetime.strptime(entry_time_str, "%Y-%m-%d %H:%M:%S")
+                                    next_entry_time = end_of_hour
+
+                                if entry_time < end_time and entry_time >= start_time:
+                                    if user_data[j]["online"] == 1:
+                                        if next_entry_time <= end_time:
+                                            online_duration = (next_entry_time - entry_time).total_seconds() / 60
+                                            hourly_online_times[i] += online_duration
+                                        else:
+                                            online_duration = (end_time - entry_time).total_seconds() / 60
+                                            hourly_online_times[i] += online_duration
+
+                    fig, ax = plt.subplots(figsize=(10, 5))
+                    intervals = [start_of_hour + datetime.timedelta(minutes=i * 5) for i in range(num_intervals)]
+                    ax.bar(intervals, hourly_online_times, width=0.004, align='edge')
+                    ax.set_xlabel("Время")
+                    ax.set_ylabel("Время онлайн (минуты)")
+                    ax.set_title(f"Активность пользователя {user_id} за {hour} час")
+                    ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=10))
+                    ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                    fig.autofmt_xdate()
 
                 buf = BytesIO()
                 plt.savefig(buf, format='png')
                 buf.seek(0)
                 plt.close()
-
                 bot.send_photo(message.chat.id, photo=buf)
         except ValueError:
-            bot.reply_to(message, "Неверный формат ID.  Пожалуйста, введите число.")
+            bot.reply_to(message, "Неверный формат ID, даты или часа. Пожалуйста, проверьте введенные данные.")
         except Exception as e:
             bot.reply_to(message, f"Ошибка: {e}")
 
