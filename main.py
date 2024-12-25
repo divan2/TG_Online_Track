@@ -29,23 +29,24 @@ async def check_user_online(app, user_id, filename):
         print(is_online, "is_online", user.username)
         with (open(filename, 'r+') as f):
             data = json.load(f)
-            if str(user_id) not in data["users"]:
-                data["users"][str(user_id)] = []
+            for tracker_id, tracker_data in data.get("trackers", {}).items():
+                if user_id in tracker_data.get("users", {}):
+                    if tracker_data["users"][str(user_id)] != []:
+                        if tracker_data["users"][str(user_id)][-1]["online"] != is_online:
+                            if is_online == 0:
+                                time = str(user.last_online_date)
+                                data["trackers"][tracker_id]["users"][str(user_id)].append(
+                                    {"time": time, "online": is_online})
 
-            if data["users"][str(user_id)] != []:
-                if data["users"][str(user_id)][-1]["online"] != is_online:
-                    if is_online == 0:
-                        time = str(user.last_online_date)
-                        data["users"][str(user_id)].append({"time": time, "online": is_online})
-
+                            else:
+                                current_datetime = datetime.datetime.now()
+                                time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
+                                data["trackers"][tracker_id]["users"][str(user_id)].append(
+                                    {"time": time, "online": is_online})
                     else:
                         current_datetime = datetime.datetime.now()
                         time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
-                        data["users"][str(user_id)].append({"time": time, "online": is_online})
-            else:
-                current_datetime = datetime.datetime.now()
-                time = current_datetime.strftime("%Y-%m-%d %H:%M:%S")
-                data["users"][str(user_id)].append({"time": time, "online": is_online})
+                        data["trackers"][tracker_id]["users"][str(user_id)].append({"time": time, "online": is_online})
             f.seek(0)
             json.dump(data, f, indent=4)
             f.truncate()
@@ -63,9 +64,10 @@ async def run_internal_bot(app_id, api_hash, bot_token):
                 user_data = json.load(f)
 
             tasks = []
-            for user_id in user_data["users"]:
-                tasks.append(check_user_online(app, user_id, 'id.json'))
-                tasks.append(asyncio.sleep(5))  # Задержка 5 секунд для каждого пользователя
+            for tracker_id, tracker_data in user_data.get("trackers", {}).items():
+                for user_id in tracker_data.get("users", {}):
+                    tasks.append(check_user_online(app, user_id, 'id.json'))
+                    tasks.append(asyncio.sleep(5))  # Задержка 5 секунд для каждого пользователя
 
             if tasks:
                 await asyncio.gather(*tasks)
@@ -98,6 +100,12 @@ def run_external_bot(bot_token):
         markup.add(btn_month, btn_day, btn_hour)
         return markup
 
+    def create_back_keyboard():
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        btn_back = types.KeyboardButton("Назад")
+        markup.add(btn_back)
+        return markup
+
     @bot.message_handler(commands=['start'])
     def start_message(message):
         markup = create_keyboard()
@@ -108,10 +116,18 @@ def run_external_bot(bot_token):
     @bot.message_handler(func=lambda message: message.text == "Добавить пользователя")
     def add_user_button_handler(message):
         bot.send_message(message.chat.id, "Отправьте ID пользователя Telegram для отслеживания.",
-                         reply_markup=create_keyboard())
-        bot.register_next_step_handler(message, handle_add_user)
+                         reply_markup=create_back_keyboard())
+        bot.register_next_step_handler(message, lambda msg: handle_add_user(msg, message.from_user.id))
 
-    def handle_add_user(message):
+    @bot.message_handler(func=lambda message: message.text == "Назад")
+    def back_button_handler(message):
+        markup = create_keyboard()
+        bot.send_message(message.chat.id, "Вы вернулись в основное меню", reply_markup=markup)
+
+    def handle_add_user(message, tracker_id):
+        if message.text == "Назад":
+            back_button_handler(message)
+            return
         try:
             user_id = message.text
             data = {}
@@ -125,24 +141,24 @@ def run_external_bot(bot_token):
                 except json.JSONDecodeError:
                     # Если файл пустой или невалидный JSON, то начинаем с пустого словаря
                     data = {}
+            if "trackers" not in data:
+                data["trackers"] = {}
 
-
-
-            if "users" not in data:
-                data["users"] = {}
-
-            if user_id in data["users"]:
+            if str(tracker_id) not in data["trackers"]:
+                data["trackers"][str(tracker_id)] = {"tracked_users": [], "users": {}}
+            if user_id in data["trackers"][str(tracker_id)]["tracked_users"]:
                 bot.reply_to(message, f"Пользователь уже отслеживается {user_id}", reply_markup=create_keyboard())
             else:
+                data["trackers"][str(tracker_id)]["tracked_users"].append(user_id)
                 bot.reply_to(message, f"Начал отслеживать пользователя {user_id}", reply_markup=create_keyboard())
-            # Если такого пользователя нет, то создаем для него новый ключ-список
-            if str(user_id) not in data["users"]:
-                data["users"][str(user_id)] = []
+
+                # Если такого пользователя нет, то создаем для него новый ключ-список
+                if str(user_id) not in data["trackers"][str(tracker_id)]["users"]:
+                    data["trackers"][str(tracker_id)]["users"][str(user_id)] = []
 
             # Записываем обновленные данные в файл
             with open('id.json', 'w') as f:
                 json.dump(data, f, indent=4)
-                bot.reply_to(message, f"Начал отслеживать пользователя {user_id}", reply_markup=create_keyboard())
         except ValueError:
             bot.reply_to(message, "Неверный формат ID.  Пожалуйста, введите число.", reply_markup=create_keyboard())
         except Exception as e:
@@ -150,6 +166,21 @@ def run_external_bot(bot_token):
 
     @bot.message_handler(func=lambda message: message.text == "Посмотреть онлайн")
     def check_online_button_handler(message):
+        tracker_id = message.from_user.id
+        with open('id.json', 'r') as f:
+            data = json.load(f)
+            if str(tracker_id) not in data.get("trackers", {}):
+                bot.reply_to(message, "У вас нет отслеживаемых пользователей.", reply_markup=create_keyboard())
+                return
+            tracked_users = data["trackers"][str(tracker_id)].get("tracked_users", [])
+            if not tracked_users:
+                bot.send_message(message.chat.id, "Вы пока не добавили пользователей для отслеживания.",
+                                 reply_markup=create_keyboard())
+            else:
+                user_ids_str = ", ".join(str(user_id) for user_id in tracked_users)
+                bot.send_message(message.chat.id, f"Список отслеживаемых пользователей: {user_ids_str}",
+                                 reply_markup=create_keyboard())
+
         markup = create_stats_type_keyboard()
         bot.send_message(message.chat.id, "Выберите тип отображения статистики.", reply_markup=markup)
 
@@ -171,35 +202,44 @@ def run_external_bot(bot_token):
     def handle_month_stats_graph(message):
         global otobr
         bot.send_message(message.chat.id,
-                         "Отправьте ID пользователя Telegram, чтобы посмотреть его статистику за месяц.", reply_markup=create_keyboard())
-        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='month', mode=otobr))
+                         "Отправьте ID пользователя Telegram, чтобы посмотреть его статистику за месяц.",
+                         reply_markup=create_back_keyboard())
+        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='month', mode=otobr,
+                                                                         tracker_id=message.from_user.id))
 
     @bot.message_handler(func=lambda message: message.text == "День", )
     def handle_day_stats_graph(message):
         global otobr
         bot.send_message(message.chat.id,
                          "Отправьте ID пользователя Telegram и дату (формат: YYYY-MM-DD), чтобы посмотреть его статистику за этот день.",
-                         reply_markup=create_keyboard())
-        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='day', mode=otobr))
+                         reply_markup=create_back_keyboard())
+        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='day', mode=otobr,
+                                                                         tracker_id=message.from_user.id))
 
     @bot.message_handler(func=lambda message: message.text == "Час", )
     def handle_hour_stats_graph(message):
         global otobr
         bot.send_message(message.chat.id,
                          "Отправьте ID пользователя Telegram и час (формат: HH), чтобы посмотреть его статистику за этот час.",
-                         reply_markup=create_keyboard())
-        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='hour', mode=otobr))
+                         reply_markup=create_back_keyboard())
+        bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='hour', mode=otobr,
+                                                                         tracker_id=message.from_user.id))
 
-
-    def handle_stats(message, period, mode):
+    def handle_stats(message, period, mode, tracker_id):
+        if message.text == "Назад":
+            back_button_handler(message)
+            return
         try:
             user_id = message.text.split(' ')[0] if period != 'month' else message.text
             with open('id.json', 'r') as f:
                 data = json.load(f)
-                if str(user_id) not in data["users"]:
+                if str(tracker_id) not in data.get("trackers", {}):
+                    bot.reply_to(message, "У вас нет отслеживаемых пользователей.", reply_markup=create_keyboard())
+                    return
+                if str(user_id) not in data["trackers"][str(tracker_id)].get("users", {}):
                     bot.reply_to(message, "Пользователь не отслеживается.", reply_markup=create_keyboard())
                     return
-                user_data = data["users"].get(str(user_id), [])
+                user_data = data["trackers"][str(tracker_id)]["users"].get(str(user_id), [])
                 if mode == "graph":
                     if period == 'month':
                         end_date = datetime.datetime.now()
@@ -375,7 +415,8 @@ def run_external_bot(bot_token):
                                     status = "онлайн" if entry["online"] == 1 else "оффлайн"
                                     text_stats += f"- {entry['time']}: {status}\n"
                     if len(text_stats) > 4096:
-                        bot.send_message(message.chat.id, f"сообщение слишком длинное, отправлю часть. Воспользуйтесь статистикой за час.")
+                        bot.send_message(message.chat.id,
+                                         f"сообщение слишком длинное, отправлю часть. Воспользуйтесь статистикой за час.")
                         text_stats = text_stats[:4095]
                     bot.send_message(message.chat.id, text_stats, reply_markup=create_keyboard())
         except ValueError:
@@ -386,15 +427,16 @@ def run_external_bot(bot_token):
 
     @bot.message_handler(commands=['stats'])
     def send_stats(message):
-        with open('id.json', 'r') as f:
+        with open('config1.json', 'r') as f:
             data = json.load(f)
-            if not data["users"]:
+            if not data.get("trackers", {}):
                 bot.reply_to(message, "Нет данных для отображения.", reply_markup=create_keyboard())
                 return
-            for user_id, user_data in data['users'].items():
-                online_times = [entry["online"] for entry in user_data]
-                times = [entry["time"] for entry in user_data]
-                bot.reply_to(message, f"online_times: {online_times}", reply_markup=create_keyboard())
+            for tracker_id, tracker_data in data['trackers'].items():
+                for user_id, user_data in tracker_data.get('users', {}).items():
+                    online_times = [entry["online"] for entry in user_data]
+                    times = [entry["time"] for entry in user_data]
+                    bot.reply_to(message, f"online_times: {online_times}", reply_markup=create_keyboard())
 
     bot.infinity_polling()
 
