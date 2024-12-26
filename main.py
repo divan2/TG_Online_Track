@@ -2,14 +2,13 @@ import json
 import datetime
 import asyncio
 import os
-from random import sample
 
 import matplotlib
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from io import BytesIO
-import base64
+
 import threading
 import pyrogram
 from pyrogram import Client
@@ -82,7 +81,8 @@ def run_external_bot(bot_token):
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         btn_add_user = types.KeyboardButton("Добавить пользователя")
         btn_check_online = types.KeyboardButton("Посмотреть онлайн")
-        markup.add(btn_add_user, btn_check_online)
+        btn_delete_user = types.KeyboardButton("Удалить пользователя")
+        markup.add(btn_add_user, btn_check_online, btn_delete_user)
         return markup
 
     def create_stats_type_keyboard():
@@ -110,7 +110,10 @@ def run_external_bot(bot_token):
     def start_message(message):
         markup = create_keyboard()
         bot.send_message(message.chat.id,
-                         "Привет! Нажмите кнопку, чтобы добавить пользователя для отслеживания или посмотреть его онлайн-статус.",
+                         "Здравствуйте!\n"
+                         "Это бот позволяет отслеживать онлайн-активность пользователей в Telegram.\n"
+                        "Для корректной работы бота необходимо, чтобы у пользователя была включена видимость онлайна."
+                         " Нажмите кнопку, чтобы добавить пользователя для отслеживания, посмотреть его онлайн-статус или удалить пользователя.",
                          reply_markup=markup)
 
     @bot.message_handler(func=lambda message: message.text == "Добавить пользователя")
@@ -184,6 +187,44 @@ def run_external_bot(bot_token):
         markup = create_stats_type_keyboard()
         bot.send_message(message.chat.id, "Выберите тип отображения статистики.", reply_markup=markup)
 
+    @bot.message_handler(func=lambda message: message.text == "Удалить пользователя")
+    def delete_user_button_handler(message):
+        bot.send_message(message.chat.id, "Отправьте ID пользователя Telegram для удаления.",
+                         reply_markup=create_back_keyboard())
+        bot.register_next_step_handler(message, lambda msg: handle_delete_user(msg, message.from_user.id))
+
+    def handle_delete_user(message, tracker_id):
+        if message.text == "Назад":
+            back_button_handler(message)
+            return
+        try:
+            user_id_to_delete = message.text
+            with open('id.json', 'r+') as f:
+                data = json.load(f)
+                if str(tracker_id) not in data.get("trackers", {}):
+                    bot.reply_to(message, "У вас нет отслеживаемых пользователей.", reply_markup=create_keyboard())
+                    return
+
+                tracker_data = data["trackers"].get(str(tracker_id), {})
+                if user_id_to_delete in tracker_data.get("tracked_users", []):
+
+                    tracker_data["tracked_users"].remove(user_id_to_delete)
+                    if str(user_id_to_delete) in tracker_data.get("users", {}):
+                        del tracker_data["users"][str(user_id_to_delete)]
+
+                    f.seek(0)
+                    json.dump(data, f, indent=4)
+                    f.truncate()
+                    bot.reply_to(message, f"Пользователь {user_id_to_delete} больше не отслеживается.",
+                                 reply_markup=create_keyboard())
+                else:
+                    bot.reply_to(message, f"Пользователь {user_id_to_delete} не отслеживается.",
+                                 reply_markup=create_keyboard())
+        except ValueError:
+            bot.reply_to(message, "Неверный формат ID. Пожалуйста, введите число.", reply_markup=create_keyboard())
+        except Exception as e:
+            bot.reply_to(message, f"Ошибка: {e}", reply_markup=create_keyboard())
+
     @bot.message_handler(func=lambda message: message.text == "График")
     def handle_graph_stats_button(message):
         global otobr
@@ -211,7 +252,7 @@ def run_external_bot(bot_token):
     def handle_day_stats_graph(message):
         global otobr
         bot.send_message(message.chat.id,
-                         "Отправьте ID пользователя Telegram и дату (формат: YYYY-MM-DD), чтобы посмотреть его статистику за этот день.",
+                         "Отправьте ID пользователя Telegram и дату (формат: YYYY-MM-DD), чтобы посмотреть его статистику за этот день. (Пример: @user123 2024-12-20)",
                          reply_markup=create_back_keyboard())
         bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='day', mode=otobr,
                                                                          tracker_id=message.from_user.id))
@@ -220,7 +261,7 @@ def run_external_bot(bot_token):
     def handle_hour_stats_graph(message):
         global otobr
         bot.send_message(message.chat.id,
-                         "Отправьте ID пользователя Telegram и час (формат: HH), чтобы посмотреть его статистику за этот час.",
+                         "Отправьте ID пользователя Telegram и час (формат: HH), чтобы посмотреть его статистику за этот час. (Пример: @user123 14)",
                          reply_markup=create_back_keyboard())
         bot.register_next_step_handler(message, lambda msg: handle_stats(msg, period='hour', mode=otobr,
                                                                          tracker_id=message.from_user.id))
@@ -312,17 +353,17 @@ def run_external_bot(bot_token):
                                     if entry_time < end_time and entry_time >= start_time:
                                         if user_data[j]["online"] == 1:
                                             if next_entry_time <= end_time:
-                                                online_duration = (next_entry_time - entry_time).total_seconds() / 3600
+                                                online_duration = (next_entry_time - entry_time).total_seconds() / 60
                                                 hourly_online_times[i] += online_duration
                                             else:
-                                                online_duration = (end_time - entry_time).total_seconds() / 3600
+                                                online_duration = (end_time - entry_time).total_seconds() / 60
                                                 hourly_online_times[i] += online_duration
 
                         fig, ax = plt.subplots(figsize=(10, 5))
                         hours = [start_of_day + datetime.timedelta(hours=i) for i in range(24)]
                         ax.bar(hours, hourly_online_times, width=0.04, align='edge')
                         ax.set_xlabel("Время")
-                        ax.set_ylabel("Время онлайн (часы)")
+                        ax.set_ylabel("Время онлайн (минуты)")
                         ax.set_title(f"Активность пользователя {user_id} за {date.strftime('%Y-%m-%d')}")
                         ax.xaxis.set_major_locator(mdates.HourLocator(interval=3))
                         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
